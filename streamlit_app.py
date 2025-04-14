@@ -6,6 +6,7 @@ import numpy as np
 from torch import nn
 import gdown
 import os
+import torch.nn.functional as F
 
 # Model definition (must match your training architecture)
 class ResidualBlock(nn.Module):
@@ -56,7 +57,7 @@ class AudioResNet(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
         x = self.avgpool(x)
-        x = x.view(x.size(0), -1)
+        x = torch.flatten(x, 1)  # Changed from view() to flatten()
         x = self.dropout(x)
         x = self.fc(x)
         return x
@@ -99,7 +100,7 @@ class AudioPreprocessor:
         return mfcc
 
 # Labels from Google Speech Commands v2
-labels = [
+LABELS = [
     'backward', 'bed', 'bird', 'cat', 'dog', 'down', 'eight', 'five', 'follow', 
     'forward', 'four', 'go', 'happy', 'house', 'learn', 'left', 'marvin', 'nine', 
     'no', 'off', 'on', 'one', 'right', 'seven', 'sheila', 'six', 'stop', 'three', 
@@ -114,37 +115,46 @@ def load_model():
         url = 'https://drive.google.com/uc?id=1XcCw-c71St-895szf861FVuKrP9YQ0zA'
         gdown.download(url, model_path, quiet=False)
     
-    model = AudioResNet(num_classes=len(labels))
-    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'))['model_state_dict'])
+    # Load the checkpoint
+    checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+    
+    # Initialize model
+    model = AudioResNet(num_classes=len(LABELS))
+    
+    # Load state dict
+    model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     return model
 
 # Streamlit app
 def main():
     st.title("Speech Command Classifier")
-    st.write("Upload an audio file or record your voice to classify speech commands")
+    st.write("Upload an audio file (WAV format recommended)")
     
     model = load_model()
     preprocessor = AudioPreprocessor()
     
-    audio_file = st.file_uploader("Upload audio file", type=['wav', 'mp3'])
+    audio_file = st.file_uploader("Choose an audio file", type=['wav', 'mp3'])
     
     if audio_file is not None:
         st.audio(audio_file, format='audio/wav')
         
         if st.button("Classify"):
-            # Load and preprocess audio
-            waveform, sample_rate = torchaudio.load(audio_file)
-            features = preprocessor(waveform, sample_rate)
-            features = features.unsqueeze(0)  # Add batch dimension
-            
-            # Predict
-            with torch.no_grad():
-                outputs = model(features)
-                _, predicted = torch.max(outputs, 1)
-                predicted_label = labels[predicted.item()]
+            try:
+                # Load and preprocess audio
+                waveform, sample_rate = torchaudio.load(audio_file)
+                features = preprocessor(waveform, sample_rate)
+                features = features.unsqueeze(0)  # Add batch dimension
                 
-            st.success(f"Predicted command: **{predicted_label}**")
+                # Predict
+                with torch.no_grad():
+                    outputs = model(features)
+                    _, predicted = torch.max(outputs, 1)
+                    predicted_label = LABELS[predicted.item()]
+                    
+                st.success(f"Predicted command: **{predicted_label}**")
+            except Exception as e:
+                st.error(f"Error processing audio: {str(e)}")
 
 if __name__ == "__main__":
     main()
