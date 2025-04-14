@@ -124,7 +124,7 @@ def preprocess_audio(waveform, sample_rate):
     return mfcc_transform(waveform)
 
 # Streamlit UI
-st.title("Google Speech Commands Classifier")
+st.title("Google Speech Commands Classifier- REFIX")
 st.write("Upload a 1-second audio clip to classify the speech command")
 
 uploaded_file = st.file_uploader("Choose a WAV file", type=['wav', 'mp3'])
