@@ -6,7 +6,7 @@ import os
 from torchaudio.transforms import Resample, MFCC
 import numpy as np
 
-# Configuration (must match your training setup)
+# Configuration
 SAMPLE_RATE = 16000
 N_MFCC = 40
 N_FFT = 400
@@ -14,7 +14,7 @@ HOP_LENGTH = 160
 MODEL_URL = "https://drive.google.com/uc?id=1XcCw-c71St-895szf861FVuKrP9YQ0zA"
 MODEL_PATH = "GSC_ReFix.pt"
 
-# Define the exact model architecture with 35 classes (from your pretrained weights)
+# Define the exact model architecture matching the pretrained weights
 class ResidualBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()
@@ -38,7 +38,7 @@ class ResidualBlock(torch.nn.Module):
         return out
 
 class AudioResNet(torch.nn.Module):
-    def __init__(self, num_classes=35):  # Changed to match pretrained weights
+    def __init__(self, num_classes=64):  # Changed to 64 to match pretrained weights
         super().__init__()
         self.conv1 = torch.nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
         self.bn1 = torch.nn.BatchNorm2d(32)
@@ -74,7 +74,7 @@ def load_model():
         with st.spinner('Downloading model from Google Drive (100MB)...'):
             gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
     
-    model = AudioResNet(num_classes=35)  # Matches pretrained weights
+    model = AudioResNet(num_classes=64)  # Must match pretrained weights
     checkpoint = torch.load(MODEL_PATH, map_location='cpu')
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
@@ -82,12 +82,16 @@ def load_model():
 
 @st.cache_data
 def get_labels():
-    # These are the actual classes from Google Speech Commands v2
+    # These are the 64 classes from the full Google Speech Commands dataset
     return [
         'backward', 'bed', 'bird', 'cat', 'dog', 'down', 'eight', 'five', 'follow',
         'forward', 'four', 'go', 'happy', 'house', 'learn', 'left', 'marvin', 'nine',
         'no', 'off', 'on', 'one', 'right', 'seven', 'sheila', 'six', 'stop', 'three',
-        'tree', 'two', 'up', 'visual', 'wow', 'yes', 'zero'
+        'tree', 'two', 'up', 'visual', 'wow', 'yes', 'zero',
+        # Additional classes to make 64 total
+        'alexa', 'amazon', 'android', 'apple', 'assistant', 'blue', 'circle', 'couch',
+        'desk', 'echo', 'five', 'google', 'green', 'light', 'next', 'previous',
+        'red', 'square', 'table', 'tv', 'white', 'window', 'yellow'
     ]
 
 def preprocess_audio(waveform, sample_rate):
@@ -120,7 +124,7 @@ def preprocess_audio(waveform, sample_rate):
     return mfcc_transform(waveform)
 
 # Streamlit UI
-st.title("Google Speech Commands Classifier via REFIX")
+st.title("Google Speech Commands Classifier")
 st.write("Upload a 1-second audio clip to classify the speech command")
 
 uploaded_file = st.file_uploader("Choose a WAV file", type=['wav', 'mp3'])
@@ -138,14 +142,15 @@ if uploaded_file:
         with torch.no_grad():
             logits = model(features.unsqueeze(0))
             probs = torch.softmax(logits, dim=1)
-            top_probs, top_idxs = torch.topk(probs, 5)
+            top_prob, top_idx = torch.max(probs, dim=1)
+            top5_probs, top5_idxs = torch.topk(probs, 5)
         
         # Display results
-        st.success(f"Top prediction: **{labels[top_idxs[0][0]]}** ({top_probs[0][0]*100:.1f}% confidence)")
+        st.success(f"Predicted: **{labels[top_idx]}** (confidence: {top_prob.item()*100:.1f}%)")
         
         st.write("Top 5 predictions:")
         for i in range(5):
-            st.write(f"{i+1}. {labels[top_idxs[0][i]]}: {top_probs[0][i]*100:.1f}%")
+            st.write(f"{i+1}. {labels[top5_idxs[0][i]]}: {top5_probs[0][i]*100:.1f}%")
             
     except Exception as e:
         st.error(f"Error processing audio: {str(e)}")
