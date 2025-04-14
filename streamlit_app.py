@@ -1,37 +1,93 @@
 import streamlit as st
 import torch
 import torchaudio
+import gdown
+import os
 from torchaudio.transforms import Resample, MFCC
 import numpy as np
 
-# Configuration (match your training setup)
+# Configuration (must match your training setup)
 SAMPLE_RATE = 16000
 N_MFCC = 40
 N_FFT = 400
 HOP_LENGTH = 160
-LABELS = ['yes', 'no', 'up', 'down', 'left', 'right', 'on', 'off', 'stop', 'go']  # Update with your actual labels
+MODEL_URL = "https://drive.google.com/uc?id=1XcCw-c71St-895szf861FVuKrP9YQ0zA"
+MODEL_PATH = "GSC_ReFix.pt"
+
+# Define the exact model architecture from your training code
+class ResidualBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super().__init__()
+        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = torch.nn.BatchNorm2d(out_channels)
+        self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = torch.nn.BatchNorm2d(out_channels)
+        
+        self.shortcut = torch.nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = torch.nn.Sequential(
+                torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                torch.nn.BatchNorm2d(out_channels)
+            )
+            
+    def forward(self, x):
+        out = torch.nn.functional.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = torch.nn.functional.relu(out)
+        return out
+
+class AudioResNet(torch.nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        self.conv1 = torch.nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
+        self.bn1 = torch.nn.BatchNorm2d(32)
+        self.layer1 = self._make_layer(32, 32, 2, stride=1)
+        self.layer2 = self._make_layer(32, 64, 2, stride=2)
+        self.layer3 = self._make_layer(64, 128, 2, stride=2)
+        self.layer4 = self._make_layer(128, 256, 2, stride=2)
+        self.avgpool = torch.nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = torch.nn.Linear(256, num_classes)
+        self.dropout = torch.nn.Dropout(0.5)
+        
+    def _make_layer(self, in_channels, out_channels, num_blocks, stride):
+        layers = [ResidualBlock(in_channels, out_channels, stride)]
+        for _ in range(1, num_blocks):
+            layers.append(ResidualBlock(out_channels, out_channels, 1))
+        return torch.nn.Sequential(*layers)
+    
+    def forward(self, x):
+        x = torch.nn.functional.relu(self.bn1(self.conv1(x)))
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        x = self.dropout(x)
+        x = self.fc(x)
+        return x
 
 @st.cache_resource
 def load_model():
-    # Initialize a simple model structure (must match your training architecture)
-    model = torch.nn.Sequential(
-        torch.nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
-        torch.nn.BatchNorm2d(32),
-        torch.nn.ReLU(),
-        torch.nn.MaxPool2d(2),
-        torch.nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-        torch.nn.BatchNorm2d(64),
-        torch.nn.ReLU(),
-        torch.nn.MaxPool2d(2),
-        torch.nn.AdaptiveAvgPool2d((1, 1)),
-        torch.nn.Flatten(),
-        torch.nn.Linear(64, len(LABELS))
+    # Download model if not exists
+    if not os.path.exists(MODEL_PATH):
+        with st.spinner("Downloading model from Google Drive (100MB)..."):
+            gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
     
-    # Load your trained weights
-    state_dict = torch.load('GSC_ReFix.pt', map_location='cpu')['model_state_dict']
-    model.load_state_dict(state_dict)
+    # Initialize model with correct number of classes
+    model = AudioResNet(num_classes=len(get_labels()))
+    
+    # Load trained weights
+    checkpoint = torch.load(MODEL_PATH, map_location='cpu')
+    model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     return model
+
+@st.cache_data
+def get_labels():
+    # Return the exact same labels used in training
+    return ['yes', 'no', 'up', 'down', 'left', 'right', 'on', 'off', 'stop', 'go']
 
 def preprocess_audio(waveform, sample_rate):
     # Resample if needed
@@ -43,7 +99,7 @@ def preprocess_audio(waveform, sample_rate):
     if waveform.shape[0] > 1:
         waveform = torch.mean(waveform, dim=0, keepdim=True)
     
-    # Pad/trim to 1 second
+    # Pad/trim to 1 second (16000 samples)
     if waveform.shape[1] < SAMPLE_RATE:
         waveform = torch.nn.functional.pad(waveform, (0, SAMPLE_RATE - waveform.shape[1]))
     else:
@@ -53,15 +109,20 @@ def preprocess_audio(waveform, sample_rate):
     mfcc_transform = MFCC(
         sample_rate=SAMPLE_RATE,
         n_mfcc=N_MFCC,
-        melkwargs={'n_fft': N_FFT, 'hop_length': HOP_LENGTH, 'n_mels': 80, 'center': False}
+        melkwargs={
+            'n_fft': N_FFT,
+            'hop_length': HOP_LENGTH,
+            'n_mels': 80,
+            'center': False
+        }
     )
     return mfcc_transform(waveform)
 
 # Streamlit UI
-st.title("Speech Command Classifier")
+st.title("Google Speech Commands Classifier")
 st.write("Upload a 1-second audio clip with a spoken command")
 
-uploaded_file = st.file_uploader("Choose a WAV file", type=['wav'])
+uploaded_file = st.file_uploader("Choose a WAV file", type=['wav', 'mp3'])
 
 if uploaded_file:
     try:
@@ -77,12 +138,14 @@ if uploaded_file:
             top_prob, top_idx = torch.max(probs, dim=1)
         
         # Display results
-        st.success(f"Predicted: {LABELS[top_idx]} ({(top_prob.item()*100):.1f}% confidence)")
+        labels = get_labels()
+        st.success(f"Predicted: **{labels[top_idx]}** (confidence: {top_prob.item()*100:.1f}%)")
         
         # Show all probabilities
-        st.write("All predictions:")
+        st.write("Detailed predictions:")
         for i, prob in enumerate(probs.squeeze().numpy()):
-            st.progress(float(prob), text=f"{LABELS[i]}: {prob:.1%}")
+            st.write(f"- {labels[i]}: {prob:.1%}")
             
     except Exception as e:
         st.error(f"Error processing audio: {str(e)}")
+        st.error("Please ensure you upload a valid audio file (1s duration, 16kHz sample rate recommended)")
