@@ -1,107 +1,88 @@
 import streamlit as st
 import torch
 import torchaudio
-import torchaudio.transforms as T
-import gdown
-import os
-import torch.nn.functional as F
+from torchaudio.transforms import Resample, MFCC
+import numpy as np
 
-# Simplified Model Architecture
-class SpeechCommandModel(torch.nn.Module):
-    def __init__(self, num_classes=35):
-        super().__init__()
-        self.conv1 = torch.nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
-        self.bn1 = torch.nn.BatchNorm2d(32)
-        self.conv2 = torch.nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1)
-        self.bn2 = torch.nn.BatchNorm2d(64)
-        self.conv3 = torch.nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1)
-        self.bn3 = torch.nn.BatchNorm2d(128)
-        self.avgpool = torch.nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = torch.nn.Linear(128, num_classes)
+# Configuration (match your training setup)
+SAMPLE_RATE = 16000
+N_MFCC = 40
+N_FFT = 400
+HOP_LENGTH = 160
+LABELS = ['yes', 'no', 'up', 'down', 'left', 'right', 'on', 'off', 'stop', 'go']  # Update with your actual labels
 
-    def forward(self, x):
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.fc(x)
-        return x
-
-# Audio Preprocessor
-class AudioPreprocessor:
-    def __init__(self):
-        self.sample_rate = 16000
-        self.mfcc = T.MFCC(
-            sample_rate=self.sample_rate,
-            n_mfcc=40,
-            melkwargs={'n_fft': 400, 'hop_length': 160, 'n_mels': 80}
-        )
-
-    def __call__(self, waveform, sample_rate):
-        if sample_rate != self.sample_rate:
-            waveform = T.Resample(sample_rate, self.sample_rate)(waveform)
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
-        if waveform.shape[1] < self.sample_rate:
-            waveform = F.pad(waveform, (0, self.sample_rate - waveform.shape[1]))
-        else:
-            waveform = waveform[:, :self.sample_rate]
-        return self.mfcc(waveform)
-
-# Labels
-LABELS = [
-    'backward', 'bed', 'bird', 'cat', 'dog', 'down', 'eight', 'five', 'follow',
-    'forward', 'four', 'go', 'happy', 'house', 'learn', 'left', 'marvin', 'nine',
-    'no', 'off', 'on', 'one', 'right', 'seven', 'sheila', 'six', 'stop', 'three',
-    'tree', 'two', 'up', 'visual', 'wow', 'yes', 'zero'
-]
-
-# Model Loader
 @st.cache_resource
 def load_model():
-    model_path = 'model.pt'
-    if not os.path.exists(model_path):
-        url = 'https://drive.google.com/uc?id=1XcCw-c71St-895szf861FVuKrP9YQ0zA'
-        gdown.download(url, model_path, quiet=True)
+    # Initialize a simple model structure (must match your training architecture)
+    model = torch.nn.Sequential(
+        torch.nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
+        torch.nn.BatchNorm2d(32),
+        torch.nn.ReLU(),
+        torch.nn.MaxPool2d(2),
+        torch.nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+        torch.nn.BatchNorm2d(64),
+        torch.nn.ReLU(),
+        torch.nn.MaxPool2d(2),
+        torch.nn.AdaptiveAvgPool2d((1, 1)),
+        torch.nn.Flatten(),
+        torch.nn.Linear(64, len(LABELS))
     
-    model = SpeechCommandModel(num_classes=len(LABELS))
-    checkpoint = torch.load(model_path, map_location='cpu')
-    
-    # Handle different checkpoint formats
-    if 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-    else:
-        state_dict = checkpoint
-        
+    # Load your trained weights
+    state_dict = torch.load('GSC_ReFix.pt', map_location='cpu')['model_state_dict']
     model.load_state_dict(state_dict)
     model.eval()
     return model
 
-# Streamlit App
-def main():
-    st.title("Speech Command Classifier")
-    st.write("Upload a 1-second audio clip (WAV format recommended)")
+def preprocess_audio(waveform, sample_rate):
+    # Resample if needed
+    if sample_rate != SAMPLE_RATE:
+        resampler = Resample(orig_freq=sample_rate, new_freq=SAMPLE_RATE)
+        waveform = resampler(waveform)
     
-    model = load_model()
-    preprocessor = AudioPreprocessor()
+    # Convert to mono if stereo
+    if waveform.shape[0] > 1:
+        waveform = torch.mean(waveform, dim=0, keepdim=True)
     
-    audio_file = st.file_uploader("Choose file", type=['wav', 'mp3'])
+    # Pad/trim to 1 second
+    if waveform.shape[1] < SAMPLE_RATE:
+        waveform = torch.nn.functional.pad(waveform, (0, SAMPLE_RATE - waveform.shape[1]))
+    else:
+        waveform = waveform[:, :SAMPLE_RATE]
     
-    if audio_file:
-        st.audio(audio_file)
-        if st.button("Classify"):
-            try:
-                waveform, sample_rate = torchaudio.load(audio_file)
-                features = preprocessor(waveform, sample_rate).unsqueeze(0)
-                
-                with torch.no_grad():
-                    outputs = model(features)
-                    prediction = LABELS[outputs.argmax().item()]
-                
-                st.success(f"Predicted: {prediction}")
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
+    # Extract MFCC features
+    mfcc_transform = MFCC(
+        sample_rate=SAMPLE_RATE,
+        n_mfcc=N_MFCC,
+        melkwargs={'n_fft': N_FFT, 'hop_length': HOP_LENGTH, 'n_mels': 80, 'center': False}
+    )
+    return mfcc_transform(waveform)
 
-if __name__ == "__main__":
-    main()
+# Streamlit UI
+st.title("Speech Command Classifier")
+st.write("Upload a 1-second audio clip with a spoken command")
+
+uploaded_file = st.file_uploader("Choose a WAV file", type=['wav'])
+
+if uploaded_file:
+    try:
+        # Load and preprocess audio
+        waveform, sample_rate = torchaudio.load(uploaded_file)
+        features = preprocess_audio(waveform, sample_rate)
+        
+        # Load model and predict
+        model = load_model()
+        with torch.no_grad():
+            logits = model(features.unsqueeze(0))
+            probs = torch.softmax(logits, dim=1)
+            top_prob, top_idx = torch.max(probs, dim=1)
+        
+        # Display results
+        st.success(f"Predicted: {LABELS[top_idx]} ({(top_prob.item()*100):.1f}% confidence)")
+        
+        # Show all probabilities
+        st.write("All predictions:")
+        for i, prob in enumerate(probs.squeeze().numpy()):
+            st.progress(float(prob), text=f"{LABELS[i]}: {prob:.1%}")
+            
+    except Exception as e:
+        st.error(f"Error processing audio: {str(e)}")
